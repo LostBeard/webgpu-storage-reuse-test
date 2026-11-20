@@ -81,6 +81,7 @@ async function replayTrace(url, opt = {}) {
                     const hit = list.find(y => y.off === x.off);
                     if (!hit) continue;
                     R.reads = (R.reads || 0) + 1;
+                    if (opt.onRead) opt.onRead(r.i, new Uint8Array(hit.ab).slice(), x.hash);   // the bytes this replay read back
                     if (fnv(new Uint8Array(hit.ab)) !== x.hash) { R.readMismatches = (R.readMismatches || 0) + 1; if ((R.mismatchAt || []).length < 20) (R.mismatchAt = R.mismatchAt || []).push(r.i); }
                 }
                 ranges.delete(r.self);

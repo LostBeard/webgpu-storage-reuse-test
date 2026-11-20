@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PNG encoder trace replay</title>
+<style>
+  :root { --ok: #1b6e1b; --bad: #a11; --line: #bbb; --code: #f2f2f2; }
+  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 70rem; padding: 0 1rem; line-height: 1.45; background: #fff; color: #111; }
+  h1 { font-size: 1.4rem; }
+  code { background: var(--code); padding: 0 0.2rem; }
+  p.ok { color: var(--ok); } p.bad { color: var(--bad); }
+  textarea { width: 100%; font-family: ui-monospace, Consolas, monospace; font-size: 0.85rem; }
+  img { max-width: 256px; border: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<h1>Replay: one PNG encode, recorded on an RX 590, without the encoder</h1>
+<p>
+  This page replays a recording of every WebGPU call one PNG encode made (<code>traces/png_first_encode_rx590.jsonl</code>:
+  a 512 x 512 photo, SpawnDev.Codecs' GPU PNG encoder at commit f16ef38, recorded on an AMD Radeon RX 590 where that encoder's
+  files did not decode). Only WebGPU calls are replayed: no SpawnDev code. The page then hands the PNG the GPU wrote to the
+  browser's own PNG decoder: a right encoder output decodes, the RX 590's did not (its DEFLATE Huffman codes were wrong).
+  It runs by itself and takes some seconds.
+</p>
+<p><b>Adapter:</b> <span id="adapter">...</span></p>
+<p><b>Browser:</b> <span id="browser"></span></p>
+<p id="status"><b>Replaying ...</b></p>
+<p id="img"></p>
+<textarea id="report" readonly rows="12"></textarea>
+<script src="tools/replay.js"></script>
+<script>
+'use strict';
+(async () => {
+  const status = document.getElementById('status'), report = document.getElementById('report');
+  document.getElementById('browser').textContent = navigator.userAgent;
+  const reads = [];
+  const lines = [];
+  try {
+    if (!navigator.gpu) throw new Error('no navigator.gpu: this browser has no WebGPU');
+    const t0 = performance.now();
+    const R = await replayTrace('traces/png_first_encode_rx590.jsonl', { onRead: (i, bytes, hash) => reads.push({ i, bytes, hash }) });
+    const ai = (R.adapter && R.adapter.info) || {};
+    const adapterText = `${ai.vendor || '?'} / ${ai.architecture || '?'} / ${ai.device || '?'} / ${ai.description || '?'}`;
+    document.getElementById('adapter').textContent = adapterText;
+    lines.push('Adapter: ' + adapterText, 'Browser: ' + navigator.userAgent);
+    lines.push(`Replay: ${R.of} records, ${R.errors.length} WebGPU errors${R.lost ? ', device lost: ' + R.lost : ''}, ` +
+      `${R.reads || 0} readbacks, ${R.readMismatches || 0} differ from the RX 590 recording, ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+    if (R.errors.length) lines.push('First errors: ' + R.errors.slice(0, 3).join(' | '));
+    // the PNG: the large readback; its length is the 4-byte readback before it (little-endian)
+    let png = null;
+    for (let k = 1; k < reads.length; k++) {
+      if (reads[k - 1].bytes.length === 4 && reads[k].bytes.length > 1000) {
+        const len = new DataView(reads[k - 1].bytes.buffer).getInt32(0, true);
+        const b = reads[k].bytes;
+        if (len > 0 && len <= b.length && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) { png = b.subarray(0, len); break; }
+      }
+    }
+    if (!png) throw new Error('no PNG among the readbacks (' + reads.map(r => r.bytes.length).join(', ') + ' bytes)');
+    let decoded = false, why = '';
+    try {
+      const bmp = await createImageBitmap(new Blob([png], { type: 'image/png' }));
+      decoded = bmp.width === 512 && bmp.height === 512; why = `${bmp.width} x ${bmp.height}`;
+      const img = document.createElement('img'); img.src = URL.createObjectURL(new Blob([png], { type: 'image/png' })); document.getElementById('img').appendChild(img);
+    } catch (e) { why = String(e && e.message || e); }
+    const verdict = decoded
+      ? 'NOT AFFECTED: the PNG the GPU wrote decodes (' + why + ').'
+      : 'AFFECTED: the PNG the GPU wrote does not decode (' + why + ').';
+    lines.unshift(verdict);
+    lines.push(`PNG: ${png.length} bytes`);
+    status.className = decoded ? 'ok' : 'bad';
+    status.innerHTML = '<b>' + verdict + '</b>';
+  } catch (e) {
+    status.className = 'bad'; status.innerHTML = '<b>Could not run: ' + (e && e.message || e) + '</b>';
+    lines.unshift('Could not run: ' + (e && e.message || e));
+  }
+  report.value = lines.join('\n');
+  console.log('[report] ' + report.value.replace(/\n/g, ' | '));
+})();
+</script>
+</body>
+</html>
