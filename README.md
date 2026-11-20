@@ -26,7 +26,24 @@ exactly the ones the **literal** code's counts give. The same WGSL is right on a
 right on CUDA and OpenCL on the RX 590 itself. Codecs moved the counters to thread-private memory
 (LostBeard/SpawnDev.Codecs#1).
 
-## Results so far
+## The replay: reproduced without SpawnDev code
+
+**Replay page:** https://lostbeard.github.io/webgpu-storage-reuse-test/replay.html
+
+`traces/png_first_encode_rx590.jsonl` is every WebGPU call of one PNG encode (a 512 x 512 photo) by SpawnDev.Codecs' GPU encoder
+at commit f16ef38, recorded on the RX 590 with `tools/tracer.js` (the first 414 of 28,255 records; `tools/trim_trace.py`).
+`replay.html` reissues those calls on a fresh device (`tools/replay.js`; no SpawnDev code, no .NET) and hands the PNG the GPU
+wrote to the browser's own PNG decoder. The faulty kernel is `PlanKernel` in the recording (about 261 KB of WGSL): one thread
+per DEFLATE block, building the three Huffman codes of the block in the same storage slots.
+
+| GPU | Driver | Browser | Replay result |
+|---|---|---|---|
+| AMD Radeon RX 590 (gcn-4, 0x67df) | 31.0.21925.1001 | Chrome 157, D3D12 | **affected, 3 of 3 runs**: the PNG does not decode ("The source image could not be decoded."), 0 WebGPU errors, every readback equal to the recording (byte for byte) |
+| NVIDIA RTX 4070 (lovelace) | | Chrome 157, D3D12 | not affected: the PNG decodes (512 x 512), 0 WebGPU errors; its PNG differs from the recorded one (same length) |
+
+The same encoder is right on CUDA and OpenCL on the RX 590, and its WGSL is right on the NVIDIA GPU.
+
+## The simple page: results so far
 
 | GPU | Browser | Result |
 |---|---|---|
