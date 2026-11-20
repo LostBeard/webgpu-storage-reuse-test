@@ -1,7 +1,8 @@
 # Does one WebGPU invocation read back what it just wrote?
 
 **Live page:** https://lostbeard.github.io/webgpu-storage-reuse-test/ (`?selftest` adds a variant that is wrong on purpose)  
-**Reported:** Chromium [587973845](https://issues.chromium.org/issues/587973845) (Blink>WebGPU); AMD (see below)
+**Reported:** Chromium [587973845](https://issues.chromium.org/issues/587973845) (Blink>WebGPU); AMD through the AMD Bug Report Tool
+on the RX 590 PC, 2026-11-20 (the tool gives no public reference)
 
 One invocation (workgroup size 1, one workgroup) builds three canonical Huffman codes in a row, as a DEFLATE encoder does
 (literal, distance and code-length codes). Each build zeroes 16 counters in a storage buffer, counts the code lengths into
