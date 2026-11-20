@@ -98,7 +98,18 @@ async function replayTrace(url, opt = {}) {
                     const want = args[0].requiredFeatures;
                     const keep = want.filter(f => self.features.has(f));
                     R.droppedFeatures = want.filter(f => !self.features.has(f));
-                    args = [Object.assign({}, args[0], { requiredFeatures: keep })].concat(args.slice(1));
+                    // and limits no higher than this adapter's (the recorded ones were the recording adapter's maxima; the recorded
+                    // shaders need far less: workgroups of at most 256, at most 7 storage buffers). Lowered ones are reported.
+                    let limits = args[0].requiredLimits;
+                    if (limits) {
+                        limits = Object.assign({}, limits);
+                        R.loweredLimits = [];
+                        for (const k of Object.keys(limits)) {
+                            const have = self.limits[k];
+                            if (typeof have === 'number' && limits[k] > have) { R.loweredLimits.push(k + ' ' + limits[k] + ' -> ' + have); limits[k] = have; }
+                        }
+                    }
+                    args = [Object.assign({}, args[0], { requiredFeatures: keep }, limits ? { requiredLimits: limits } : {})].concat(args.slice(1));
                     ret = self[meth](...args);
                 }
                 else ret = self[meth](...args);

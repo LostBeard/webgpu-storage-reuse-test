@@ -47,6 +47,7 @@
     lines.push(`Replay: ${R.of} records, ${R.errors.length} WebGPU errors${R.lost ? ', device lost: ' + R.lost : ''}, ` +
       `${R.reads || 0} readbacks, ${R.readMismatches || 0} differ from the RX 590 recording, ${((performance.now() - t0) / 1000).toFixed(1)} s`);
     if (R.droppedFeatures && R.droppedFeatures.length) lines.push('Features this adapter lacks, not requested: ' + R.droppedFeatures.join(', '));
+    if (R.loweredLimits && R.loweredLimits.length) lines.push('Limits lowered to what this adapter supports: ' + R.loweredLimits.join(', '));
     if (R.errors.length) lines.push('First errors: ' + R.errors.slice(0, 3).join(' | '));
     // the PNG: the large readback; its length is the 4-byte readback before it (little-endian)
     let png = null;
