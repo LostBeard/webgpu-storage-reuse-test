@@ -46,7 +46,8 @@ per DEFLATE block, building the three Huffman codes of the block in the same sto
 The same encoder is right on CUDA and OpenCL on the RX 590, and its WGSL is right on the NVIDIA GPU.
 Both D3D shader compilers break it on the RX 590, and so does **Firefox**, whose WebGPU (wgpu) generates its own HLSL from the
 WGSL instead of Dawn's. All of them write the **same broken PNG** (403,614 bytes, FNV-1a `ee572ce0`; its zlib stream fails with
-"invalid bit length repeat": the code-length code is wrong). What they share is the **AMD D3D12 driver** (31.0.21925.1001);
+"invalid bit length repeat": the code-length code is wrong). What they share is the **AMD D3D12 driver** (31.0.21925.1001 = AMD Software Adrenalin 26.5.2, the Polaris & Vega branch,
+WHQL 2026-05-21: the newest driver AMD lists for the RX 590);
 NVIDIA is right with the same calls.
 
 | GPU | Browser | Verdict (the PNG's zlib stream must inflate to 786,944 bytes) |
