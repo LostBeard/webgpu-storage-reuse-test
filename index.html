@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WebGPU storage slot reuse in one invocation</title>
+<style>
+  :root { --ok: #1b6e1b; --bad: #a11; --okbg: #eaf7ea; --badbg: #fde8e8; --line: #bbb; --code: #f2f2f2; }
+  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 70rem; padding: 0 1rem; line-height: 1.45; background: #fff; color: #111; }
+  h1 { font-size: 1.4rem; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { border: 1px solid var(--line); padding: 0.35rem 0.6rem; text-align: left; font-size: 0.95rem; vertical-align: top; }
+  tr.ok td { background: var(--okbg); } tr.bad td { background: var(--badbg); }
+  p.ok { color: var(--ok); } p.bad { color: var(--bad); }
+  code { background: var(--code); padding: 0 0.2rem; }
+  textarea { width: 100%; font-family: ui-monospace, Consolas, monospace; font-size: 0.85rem; }
+  pre { white-space: pre-wrap; font-size: 0.8rem; background: #f7f7f7; padding: 0.5rem; max-height: 20rem; overflow: auto; }
+</style>
+</head>
+<body>
+<h1>Does one WebGPU invocation read back what it just wrote to a storage buffer?</h1>
+<p>
+  One invocation (workgroup size 1, one workgroup) builds three canonical Huffman codes in a row (the DEFLATE literal, distance and
+  code-length codes, as an encoder does). Each build zeroes 16 counters in a storage buffer, counts the code lengths into them, and reads
+  them back to compute the first code of each length. All three builds use the <b>same</b> 16 counter slots. WGSL orders one
+  invocation's own accesses: every read must see that invocation's latest write. The page compares the codes with the same computation in
+  JavaScript. Plain WebGPU, no libraries. It runs by itself.
+</p>
+<p><b>Adapter:</b> <span id="adapter">...</span></p>
+<p><b>Browser:</b> <span id="browser"></span></p>
+<table>
+  <thead><tr><th>Variant</th><th>Kind</th><th>Literal code</th><th>Distance code</th><th>Code-length code</th><th>Note</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<p id="status"><b>Running ...</b></p>
+<p>Report:</p>
+<textarea id="report" readonly rows="14"></textarea>
+<details><summary>The WGSL of each variant</summary><pre id="wgsl"></pre></details>
+<script>
+'use strict';
+// ---- the data: three sets of code lengths (DEFLATE's fixed literal lengths, 30 distance codes of 5 bits, a code-length code) ----
+const LIT = []; for (let i = 0; i < 288; i++) LIT.push(i < 144 ? 8 : i < 256 ? 9 : i < 280 ? 7 : 8);
+// 7/8/9-bit lengths like the literal code's, so codes built from the literal code's counts differ from the right ones
+const DIST = []; for (let i = 0; i < 32; i++) DIST.push(i < 10 ? 8 : i < 20 ? 9 : i < 30 ? 7 : 0);
+const CL = [3, 3, 3, 3, 3, 2, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 0];
+// layout of the int buffer s (offsets relative to a runtime base, as in the encoder)
+const L = { litLens: 0, distLens: 300, clLens: 340, litCodes: 400, distCodes: 700, clCodes: 740, count: 800, next: 820, count2: 840, next2: 860, count3: 880, next3: 900, size: 1000 };
+const SETS = [
+  { name: 'Literal code', lens: LIT, lensAt: L.litLens, codesAt: L.litCodes },
+  { name: 'Distance code', lens: DIST, lensAt: L.distLens, codesAt: L.distCodes },
+  { name: 'Code-length code', lens: CL, lensAt: L.clLens, codesAt: L.clCodes },
+];
+
+function reverseBits(c, l) { let r = 0; for (let i = 0; i < l; i++) { r = (r << 1) | (c & 1); c >>= 1; } return r; }
+// canonical codes in JS; countsFrom = the lengths whose counts are used (normally the set's own)
+function codesJs(lens, countsFrom) {
+  const count = new Array(16).fill(0);
+  for (const l of countsFrom) count[l]++;
+  count[0] = 0;
+  const next = new Array(16).fill(0);
+  let code = 0;
+  for (let len = 1; len <= 15; len++) { code = (code + count[len - 1]) << 1; next[len] = code; }
+  return lens.map(l => { if (l === 0) return 0; const c = next[l]++; return reverseBits(c, l); });
+}
+
+// ---- WGSL ----
+// one build, inline; COUNT/NEXT/LENS/CODES are expressions on the runtime base b; N is the symbol count
+function buildInline(lensAt, n, codesAt, countAt, nextAt) {
+  return `
+  {
+    for (var len = 0; len <= 15; len++) { s[b + ${countAt} + len] = 0; }
+    for (var sym = 0; sym < ${n}; sym++) {
+      let l = s[b + ${lensAt} + sym];
+      s[b + ${countAt} + l] = s[b + ${countAt} + l] + 1;
+    }
+    s[b + ${countAt}] = 0;
+    var code = 0;
+    s[b + ${nextAt}] = 0;
+    for (var len = 1; len <= 15; len++) {
+      code = (code + s[b + ${countAt} + len - 1]) << 1u;
+      s[b + ${nextAt} + len] = code;
+    }
+    for (var sym = 0; sym < ${n}; sym++) {
+      let l = s[b + ${lensAt} + sym];
+      if (l != 0) {
+        let c = s[b + ${nextAt} + l];
+        s[b + ${nextAt} + l] = c + 1;
+        s[b + ${codesAt} + sym] = i32(reverseBits(u32(c)) >> (32u - u32(l)));
+      } else {
+        s[b + ${codesAt} + sym] = 0;
+      }
+    }
+  }`;
+}
+const HEADER = `
+@group(0) @binding(0) var<storage, read_write> s : array<i32>;
+@group(0) @binding(1) var<storage, read> p : array<i32>;
+`;
+const VARIANTS = [
+  {
+    name: 'A: inline x3, shared counter slots', kind: 'test',
+    wgsl: HEADER + `
+@compute @workgroup_size(1) fn main() {
+  let b = p[0];` +
+      SETS.map(t => buildInline(t.lensAt, t.lens.length, t.codesAt, L.count, L.next)).join('') + `
+}`,
+  },
+  {
+    name: 'B: a function called x3, shared counter slots', kind: 'test',
+    wgsl: HEADER + `
+fn assign(b : i32, lensAt : i32, n : i32, codesAt : i32) {
+  let countAt = ${L.count}; let nextAt = ${L.next};
+  for (var len = 0; len <= 15; len++) { s[b + countAt + len] = 0; }
+  for (var sym = 0; sym < n; sym++) {
+    let l = s[b + lensAt + sym];
+    s[b + countAt + l] = s[b + countAt + l] + 1;
+  }
+  s[b + countAt] = 0;
+  var code = 0;
+  s[b + nextAt] = 0;
+  for (var len = 1; len <= 15; len++) {
+    code = (code + s[b + countAt + len - 1]) << 1u;
+    s[b + nextAt + len] = code;
+  }
+  for (var sym = 0; sym < n; sym++) {
+    let l = s[b + lensAt + sym];
+    if (l != 0) {
+      let c = s[b + nextAt + l];
+      s[b + nextAt + l] = c + 1;
+      s[b + codesAt + sym] = i32(reverseBits(u32(c)) >> (32u - u32(l)));
+    } else {
+      s[b + codesAt + sym] = 0;
+    }
+  }
+}
+@compute @workgroup_size(1) fn main() {
+  let b = p[0];
+` + SETS.map(t => `  assign(b, ${t.lensAt}, ${t.lens.length}, ${t.codesAt});`).join('\n') + `
+}`,
+  },
+  {
+    name: 'C: inline x3, counters in a function-scope array', kind: 'control',
+    wgsl: HEADER + `
+@compute @workgroup_size(1) fn main() {
+  let b = p[0];` +
+      SETS.map(t => buildInline(t.lensAt, t.lens.length, t.codesAt, L.count, L.next)
+        .replace(/s\[b \+ \d+ \+ len\] = 0;/, 'cnt[len] = 0;')
+        .replace(/s\[b \+ \d+ \+ l\] = s\[b \+ \d+ \+ l\] \+ 1;/, 'cnt[l] = cnt[l] + 1;')
+        .replace(/s\[b \+ \d+\] = 0;\n    var code/, 'cnt[0] = 0;\n    var code')
+        .replace(/s\[b \+ \d+ \+ len - 1\]/, 'cnt[len - 1]')
+        .replace('{\n    for (var len = 0;', '{\n    var cnt : array<i32, 16>;\n    for (var len = 0;')).join('') + `
+}`,
+  },
+  {
+    name: 'D: inline x3, separate counter slots per build', kind: 'control',
+    wgsl: HEADER + `
+@compute @workgroup_size(1) fn main() {
+  let b = p[0];` +
+      SETS.map((t, i) => buildInline(t.lensAt, t.lens.length, t.codesAt, [L.count, L.count2, L.count3][i], [L.next, L.next2, L.next3][i])).join('') + `
+}`,
+  },
+];
+
+// ?selftest: a variant that is WRONG on purpose (builds 2 and 3 do not zero their counters), to show the page catches a wrong result
+if (location.search.includes('selftest')) VARIANTS.push({
+  name: 'S: self-test, counters NOT zeroed in builds 2 and 3 (must be wrong)', kind: 'self-test',
+  wgsl: HEADER + `
+@compute @workgroup_size(1) fn main() {
+  let b = p[0];` + SETS.map((t, i) => { const w = buildInline(t.lensAt, t.lens.length, t.codesAt, L.count, L.next);
+    return i === 0 ? w : w.replace(/for \(var len = 0; len <= 15; len\+\+\) \{ s\[b \+ \d+ \+ len\] = 0; \}/, '// (not zeroed)'); }).join('') + `
+}`,
+});
+
+async function runVariant(device, v) {
+  const init = new Int32Array(L.size);
+  for (const t of SETS) t.lens.forEach((l, i) => init[t.lensAt + i] = l);
+  const sBuf = device.createBuffer({ size: L.size * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(sBuf, 0, init);
+  const pBuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(pBuf, 0, new Int32Array([0, 0, 0, 0]));       // the runtime base
+  const module = device.createShaderModule({ code: v.wgsl });
+  const info = await module.getCompilationInfo();
+  const errors = info.messages.filter(m => m.type === 'error');
+  if (errors.length) throw new Error('WGSL: ' + errors.map(e => e.message).join('; '));
+  const pipeline = await device.createComputePipelineAsync({ layout: 'auto', compute: { module, entryPoint: 'main' } });
+  const bind = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: sBuf } }, { binding: 1, resource: { buffer: pBuf } }] });
+  const read = device.createBuffer({ size: L.size * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const enc = device.createCommandEncoder();
+  const pass = enc.beginComputePass(); pass.setPipeline(pipeline); pass.setBindGroup(0, bind); pass.dispatchWorkgroups(1); pass.end();
+  enc.copyBufferToBuffer(sBuf, 0, read, 0, L.size * 4);
+  device.queue.submit([enc.finish()]);
+  await read.mapAsync(GPUMapMode.READ);
+  const out = new Int32Array(read.getMappedRange().slice(0));
+  read.unmap(); sBuf.destroy(); pBuf.destroy(); read.destroy();
+  return SETS.map((t, si) => {
+    const got = Array.from(out.subarray(t.codesAt, t.codesAt + t.lens.length));
+    const want = codesJs(t.lens, t.lens);
+    let wrong = 0, first = -1;
+    got.forEach((g, i) => { if (g !== want[i]) { wrong++; if (first < 0) first = i; } });
+    let note = '';
+    if (wrong && si > 0) {
+      const stale = codesJs(t.lens, SETS[0].lens);           // counted with the literal code's lengths
+      if (got.every((g, i) => g === stale[i])) note = 'equals the codes built from the LITERAL code\'s counts';
+    }
+    return { wrong, total: t.lens.length, first, got: first >= 0 ? got[first] : 0, want: first >= 0 ? want[first] : 0, note };
+  });
+}
+
+(async () => {
+  const rows = document.getElementById('rows'), status = document.getElementById('status'), report = document.getElementById('report');
+  document.getElementById('browser').textContent = navigator.userAgent;
+  document.getElementById('wgsl').textContent = VARIANTS.map(v => '// ===== ' + v.name + '\n' + v.wgsl).join('\n\n');
+  const lines = [];
+  try {
+    if (!navigator.gpu) throw new Error('no navigator.gpu: this browser has no WebGPU');
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('no WebGPU adapter');
+    const ai = adapter.info || {};
+    const adapterText = `${ai.vendor || '?'} / ${ai.architecture || '?'} / ${ai.device || '?'} / ${ai.description || '?'}`;
+    document.getElementById('adapter').textContent = adapterText;
+    const device = await adapter.requestDevice();
+    let testsWrong = 0, controlsWrong = 0;
+    for (const v of VARIANTS) {
+      const res = await runVariant(device, v);
+      const bad = res.some(r => r.wrong);
+      if (bad && v.kind !== 'self-test') { if (v.kind === 'test') testsWrong++; else controlsWrong++; }
+      if (!bad && v.kind === 'self-test') controlsWrong++;   // the self-test must come out wrong
+      const tr = document.createElement('tr'); tr.className = bad ? 'bad' : 'ok';
+      const cell = r => r.wrong ? `${r.wrong} of ${r.total} wrong (first: symbol ${r.first}, got ${r.got}, expected ${r.want})` : `right (${r.total})`;
+      tr.innerHTML = `<td>${v.name}</td><td>${v.kind}</td><td>${cell(res[0])}</td><td>${cell(res[1])}</td><td>${cell(res[2])}</td><td>${res.map(r => r.note).filter(Boolean).join('; ')}</td>`;
+      rows.appendChild(tr);
+      lines.push(`- ${v.name} [${v.kind}]: ` + res.map((r, i) => `${SETS[i].name} ${r.wrong ? r.wrong + '/' + r.total + ' wrong' + (r.note ? ' (' + r.note + ')' : '') : 'right'}`).join(', '));
+    }
+    const verdict = testsWrong
+      ? (controlsWrong ? 'AFFECTED, and a control is wrong too.' : 'AFFECTED: a build read stale counter values from the storage buffer (the controls are right).')
+      : (controlsWrong ? 'A control is wrong while the tests are right.' : 'NOT AFFECTED: every code is right.');
+    status.className = testsWrong || controlsWrong ? 'bad' : 'ok';
+    status.innerHTML = '<b>' + verdict + '</b>';
+    report.value = [verdict, 'Adapter: ' + adapterText, 'Browser: ' + navigator.userAgent, ...lines].join('\n');
+    console.log('[report] ' + report.value.replace(/\n/g, ' | '));
+  } catch (e) {
+    status.className = 'bad'; status.innerHTML = '<b>Could not run: ' + e.message + '</b>';
+    report.value = 'Could not run: ' + e.message;
+    console.log('[report] could not run: ' + e.message);
+  }
+})();
+</script>
+</body>
+</html>
