@@ -39,9 +39,13 @@ per DEFLATE block, building the three Huffman codes of the block in the same sto
 | GPU | Driver | Browser | Replay result |
 |---|---|---|---|
 | AMD Radeon RX 590 (gcn-4, 0x67df) | 31.0.21925.1001 | Chrome 157, D3D12 | **affected, 3 of 3 runs**: the PNG does not decode ("The source image could not be decoded."), 0 WebGPU errors, every readback equal to the recording (byte for byte) |
+| AMD Radeon RX 590 (gcn-4, 0x67df) | 31.0.21925.1001 | Chrome 157, D3D12, DXC (`--enable-dawn-features=use_dxc`) | **affected**: does not decode, 0 errors, every readback equal to the recording |
+| AMD Radeon RX 590 (gcn-4, 0x67df) | 31.0.21925.1001 | Chrome 157, D3D12, FXC (`--disable-dawn-features=use_dxc`; 'subgroups' not requested, no recorded shader uses it) | **affected**: does not decode, 0 errors; the PNG differs from the recording (broken differently) |
 | NVIDIA RTX 4070 (lovelace) | | Chrome 157, D3D12 | not affected: the PNG decodes (512 x 512), 0 WebGPU errors; its PNG differs from the recorded one (same length) |
 
 The same encoder is right on CUDA and OpenCL on the RX 590, and its WGSL is right on the NVIDIA GPU.
+Both D3D shader compilers break it on the RX 590, so the fault is in what they share there (the HLSL Dawn generates, or the AMD
+D3D12 driver); NVIDIA is right with the same HLSL.
 
 ## The simple page: results so far
 
