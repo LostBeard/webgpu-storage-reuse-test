@@ -91,6 +91,16 @@ async function replayTrace(url, opt = {}) {
                 // the page lets the tester pick the GPU on a multi-GPU machine (high-performance / low-power)
                 if (cls === 'GPU' && meth === 'requestAdapter' && opt.powerPreference) args = [{ powerPreference: opt.powerPreference }];
                 if (cls === 'GPU' && meth === 'requestAdapter') { const a = await self[meth](...args); R.adapter = a; ret = Promise.resolve(a); }
+                // request only the features this adapter has: the recording asked for all its adapter offered, and a device on
+                // another adapter or shader compiler (D3D12 with FXC has no 'subgroups') would refuse the whole request. The
+                // dropped ones are reported; a trace whose shaders need one of them fails at module creation instead.
+                else if (cls === 'GPUAdapter' && meth === 'requestDevice' && args[0] && Array.isArray(args[0].requiredFeatures)) {
+                    const want = args[0].requiredFeatures;
+                    const keep = want.filter(f => self.features.has(f));
+                    R.droppedFeatures = want.filter(f => !self.features.has(f));
+                    args = [Object.assign({}, args[0], { requiredFeatures: keep })].concat(args.slice(1));
+                    ret = self[meth](...args);
+                }
                 else ret = self[meth](...args);
                 if (meth === 'getMappedRange') { let l = ranges.get(r.self); if (!l) ranges.set(r.self, l = []); l.push({ off: r.args?.[0] || 0, ab: ret }); }
             }
