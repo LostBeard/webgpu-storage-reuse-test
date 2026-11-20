@@ -59,18 +59,44 @@
       }
     }
     if (!png) throw new Error('no PNG among the readbacks (' + reads.map(r => r.bytes.length).join(', ') + ' bytes)');
-    let decoded = false, why = '';
+    // The verdict does not depend on a browser's image decoder (they differ in how much damage they accept): the PNG's
+    // IDAT data must inflate (DecompressionStream, zlib) without error to exactly height * (1 + width * channels) bytes.
+    const inflateCheck = async (file) => {
+      const dv = new DataView(file.buffer, file.byteOffset, file.byteLength);
+      let pos = 8, w = 0, h = 0, channels = 0, depth = 0;
+      const idat = [];
+      while (pos + 8 <= file.length) {
+        const len = dv.getUint32(pos), type = String.fromCharCode(file[pos + 4], file[pos + 5], file[pos + 6], file[pos + 7]);
+        const body = file.subarray(pos + 8, pos + 8 + len);
+        if (type === 'IHDR') { w = dv.getUint32(pos + 8); h = dv.getUint32(pos + 12); depth = file[pos + 16]; channels = ({ 0: 1, 2: 3, 4: 2, 6: 4 })[file[pos + 17]] || 0; }
+        else if (type === 'IDAT') idat.push(body);
+        else if (type === 'IEND') break;
+        pos += 12 + len;
+      }
+      if (!w || !channels || depth !== 8) return { ok: false, why: `unexpected header (${w} x ${h}, depth ${depth}, channels ${channels})` };
+      const want = h * (1 + w * channels);
+      const stream = new Blob(idat).stream().pipeThrough(new DecompressionStream('deflate'));
+      let got = 0;
+      try {
+        const reader = stream.getReader();
+        for (;;) { const { done, value } = await reader.read(); if (done) break; got += value.length; }
+      } catch (e) { return { ok: false, why: `zlib stream does not inflate (${String(e && e.message || e)}) after ${got} of ${want} bytes` }; }
+      return got === want ? { ok: true, why: `zlib stream inflates to ${got} bytes, ${w} x ${h}` } : { ok: false, why: `zlib stream inflates to ${got} bytes, expected ${want}` };
+    };
+    const fnvHex = u8 => { let x = 2166136261; for (let k = 0; k < u8.length; k++) { x ^= u8[k]; x = Math.imul(x, 16777619); } return (x >>> 0).toString(16); };
+    const check = await inflateCheck(png);
+    let decoderSays = '';
     try {
       const bmp = await createImageBitmap(new Blob([png], { type: 'image/png' }));
-      decoded = bmp.width === 512 && bmp.height === 512; why = `${bmp.width} x ${bmp.height}`;
+      decoderSays = `this browser's image decoder accepts it (${bmp.width} x ${bmp.height})`;
       const img = document.createElement('img'); img.src = URL.createObjectURL(new Blob([png], { type: 'image/png' })); document.getElementById('img').appendChild(img);
-    } catch (e) { why = String(e && e.message || e); }
-    const verdict = decoded
-      ? 'NOT AFFECTED: the PNG the GPU wrote decodes (' + why + ').'
-      : 'AFFECTED: the PNG the GPU wrote does not decode (' + why + ').';
+    } catch (e) { decoderSays = `this browser's image decoder rejects it (${String(e && e.message || e)})`; }
+    const verdict = check.ok
+      ? 'NOT AFFECTED: the PNG the GPU wrote is valid (' + check.why + ').'
+      : 'AFFECTED: the PNG the GPU wrote is broken (' + check.why + ').';
     lines.unshift(verdict);
-    lines.push(`PNG: ${png.length} bytes`);
-    status.className = decoded ? 'ok' : 'bad';
+    lines.push(`PNG: ${png.length} bytes, FNV-1a ${fnvHex(png)}; ${decoderSays}`);
+    status.className = check.ok ? 'ok' : 'bad';
     status.innerHTML = '<b>' + verdict + '</b>';
   } catch (e) {
     status.className = 'bad'; status.innerHTML = '<b>Could not run: ' + (e && e.message || e) + '</b>';
