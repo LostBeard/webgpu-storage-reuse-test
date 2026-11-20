@@ -31,7 +31,11 @@ right on CUDA and OpenCL on the RX 590 itself. Codecs moved the counters to thre
 | GPU | Browser | Result |
 |---|---|---|
 | NVIDIA RTX 4070 (lovelace) | Chrome 157, Windows 11 | not affected (all variants right; the self-test variant is caught) |
-| AMD Radeon RX 590 (gcn-4) | Chrome, Windows | pending |
+| AMD Radeon RX 590 (gcn-4), driver 31.0.21925.1001 | Chrome 157, Windows, D3D12 | **not affected** by this simple shape (all variants right; the self-test variant is caught), although the encoder kernel this mirrors fails on the same card |
+
+So the access pattern alone does not trigger it on the RX 590; something else in the encoder kernel does. Next step: a
+recording of that kernel's WebGPU calls (`tools/tracer.js` + `tools/trace_server.py`), replayed without the encoder
+(`tools/replay.js`), as in [webgpu-device-hung-test](https://github.com/LostBeard/webgpu-device-hung-test).
 
 Please open an issue with your page's report (it builds the text for you), affected or not.
 
