@@ -40,10 +40,12 @@ per DEFLATE block, building the three Huffman codes of the block in the same sto
 
 | GPU | Driver | Browser | Replay result |
 |---|---|---|---|
+| AMD Radeon RX 590 (gcn-4, 0x67df) | 31.0.21925.1001 | Chrome 158.0.8127.37, D3D12 (2026-11-23; Chrome 157.0.8103.79 re-run the same day: the same) | **affected, 3 of 3 runs**: PNG FNV-1a `ee572ce0`, 0 WebGPU errors, every readback equal to the recording |
 | AMD Radeon RX 590 (gcn-4, 0x67df) | 31.0.21925.1001 | Chrome 157, D3D12 | **affected, 3 of 3 runs**: the PNG does not decode ("The source image could not be decoded."), 0 WebGPU errors, every readback equal to the recording (byte for byte) |
 | AMD Radeon RX 590 (gcn-4, 0x67df) | 31.0.21925.1001 | Chrome 157, D3D12, DXC (`--enable-dawn-features=use_dxc`) | **affected**: does not decode, 0 errors, every readback equal to the recording |
 | AMD Radeon RX 590 (gcn-4, 0x67df) | 31.0.21925.1001 | Chrome 157, D3D12, FXC (`--disable-dawn-features=use_dxc`; 'subgroups' not requested, no recorded shader uses it) | **affected**: "invalid bit length repeat", 0 errors; a different broken PNG (FNV-1a `3b102e05`) |
 | NVIDIA RTX 4070 (lovelace) | | Chrome 157, D3D12 | not affected: the PNG decodes (512 x 512), 0 WebGPU errors; its PNG differs from the recorded one (same length) |
+| NVIDIA (lovelace), Chromium triage | | Chrome 158 | not affected (crbug 587973845 comment #2) |
 
 The same encoder is right on CUDA and OpenCL on the RX 590, and its WGSL is right on the NVIDIA GPU.
 Both D3D shader compilers break it on the RX 590, and so does **Firefox**, whose WebGPU (wgpu) generates its own HLSL from the
@@ -54,6 +56,7 @@ NVIDIA is right with the same calls.
 
 | GPU | Browser | Verdict (the PNG's zlib stream must inflate to 786,944 bytes) |
 |---|---|---|
+| AMD Radeon RX 590 | Chrome 158.0.8127.37, D3D12, DXC (default) | **affected**: same PNG `ee572ce0` (3 of 3 runs) |
 | AMD Radeon RX 590 | Chrome 157, D3D12, DXC (default) | **affected**: "invalid bit length repeat" after 0 bytes; PNG FNV-1a `ee572ce0` |
 | AMD Radeon RX 590 | Firefox 143.0.1 (wgpu, D3D12; limits lowered to the adapter's) | **affected**: same error, **same PNG** `ee572ce0` (Firefox's image decoder still accepts it: why the page checks the zlib stream itself) |
 
